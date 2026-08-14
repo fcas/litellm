@@ -1,19 +1,22 @@
-from typing import Dict, List, Optional
+from typing import Final, cast
 
+import litellm
 from litellm.litellm_core_utils.prompt_templates.factory import (
     convert_generic_image_chunk_to_openai_image_obj,
     convert_to_anthropic_image_obj,
 )
-from litellm.types.llms.openai import AllMessageValues
+from litellm.litellm_core_utils.prompt_templates.image_handling import (
+    convert_url_to_base64,
+)
+from litellm.types.llms.openai import AllMessageValues, ChatCompletionFileObject
 from litellm.types.llms.vertex_ai import ContentType, PartType
+from litellm.utils import supports_reasoning
 
 from ...vertex_ai.gemini.transformation import _gemini_convert_messages_with_history
 from ...vertex_ai.gemini.vertex_and_google_ai_studio_gemini import VertexGeminiConfig
 
 
-class GoogleAIStudioGeminiConfig(
-    VertexGeminiConfig
-):  # key diff from VertexAI - 'frequency_penalty' and 'presence_penalty' not supported
+class GoogleAIStudioGeminiConfig(VertexGeminiConfig):
     """
     Reference: https://ai.google.dev/api/rest/v1beta/GenerationConfig
 
@@ -38,27 +41,27 @@ class GoogleAIStudioGeminiConfig(
     Note: Please make sure to modify the default parameters as required for your use case.
     """
 
-    temperature: Optional[float] = None
-    max_output_tokens: Optional[int] = None
-    top_p: Optional[float] = None
-    top_k: Optional[int] = None
-    response_mime_type: Optional[str] = None
-    response_schema: Optional[dict] = None
-    candidate_count: Optional[int] = None
-    stop_sequences: Optional[list] = None
+    temperature: float | None = None
+    max_output_tokens: int | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    response_mime_type: str | None = None
+    response_schema: dict | None = None
+    candidate_count: int | None = None
+    stop_sequences: list | None = None
 
     def __init__(
         self,
-        temperature: Optional[float] = None,
-        max_output_tokens: Optional[int] = None,
-        top_p: Optional[float] = None,
-        top_k: Optional[int] = None,
-        response_mime_type: Optional[str] = None,
-        response_schema: Optional[dict] = None,
-        candidate_count: Optional[int] = None,
-        stop_sequences: Optional[list] = None,
+        temperature: float | None = None,
+        max_output_tokens: int | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        response_mime_type: str | None = None,
+        response_schema: dict | None = None,
+        candidate_count: int | None = None,
+        stop_sequences: list | None = None,
     ) -> None:
-        locals_ = locals()
+        locals_: Final = locals().copy()
         for key, value in locals_.items():
             if key != "self" and value is not None:
                 setattr(self.__class__, key, value)
@@ -67,8 +70,11 @@ class GoogleAIStudioGeminiConfig(
     def get_config(cls):
         return super().get_config()
 
-    def get_supported_openai_params(self, model: str) -> List[str]:
-        return [
+    def is_model_gemini_audio_model(self, model: str) -> bool:
+        return "tts" in model
+
+    def get_supported_openai_params(self, model: str) -> list[str]:
+        supported_params: Final = [
             "temperature",
             "top_p",
             "max_tokens",
@@ -81,51 +87,79 @@ class GoogleAIStudioGeminiConfig(
             "n",
             "stop",
             "logprobs",
+            "frequency_penalty",
+            "presence_penalty",
+            "modalities",
+            "parallel_tool_calls",
+            "web_search_options",
+            "include_server_side_tool_invocations",
+            "service_tier",
         ]
-
-    def map_openai_params(
-        self,
-        non_default_params: Dict,
-        optional_params: Dict,
-        model: str,
-        drop_params: bool,
-    ) -> Dict:
-
-        # drop frequency_penalty and presence_penalty
-        if "frequency_penalty" in non_default_params:
-            del non_default_params["frequency_penalty"]
-        if "presence_penalty" in non_default_params:
-            del non_default_params["presence_penalty"]
-        return super().map_openai_params(
-            model=model,
-            non_default_params=non_default_params,
-            optional_params=optional_params,
-            drop_params=drop_params,
-        )
+        if supports_reasoning(model, custom_llm_provider="gemini"):
+            supported_params.append("reasoning_effort")
+            supported_params.append("thinking")
+        if self.is_model_gemini_audio_model(model):
+            supported_params.append("audio")
+        return supported_params
 
     def _transform_messages(
-        self, messages: List[AllMessageValues]
-    ) -> List[ContentType]:
+        self,
+        messages: list[AllMessageValues],
+        model: str | None = None,
+        litellm_params: dict | None = None,
+    ) -> list[ContentType]:
         """
-        Google AI Studio Gemini does not support image urls in messages.
+        Google AI Studio Gemini does not support HTTP/HTTPS URLs for files.
+        Convert them to base64 data instead.
         """
         for message in messages:
             _message_content = message.get("content")
             if _message_content is not None and isinstance(_message_content, list):
-                _parts: List[PartType] = []
+                _parts: list[PartType] = []
                 for element in _message_content:
                     if element.get("type") == "image_url":
                         img_element = element
-                        _image_url: Optional[str] = None
+                        _image_url: str | None = None
+                        format: str | None = None
+                        detail: str | None = None
                         if isinstance(img_element.get("image_url"), dict):
-                            _image_url = img_element["image_url"].get("url")  # type: ignore
+                            _image_url = img_element["image_url"].get("url")
+                            format = img_element["image_url"].get("format")
+                            detail = img_element["image_url"].get("detail")
                         else:
-                            _image_url = img_element.get("image_url")  # type: ignore
+                            _image_url = img_element.get("image_url")
                         if _image_url and "https://" in _image_url:
-                            image_obj = convert_to_anthropic_image_obj(_image_url)
-                            img_element["image_url"] = (  # type: ignore
-                                convert_generic_image_chunk_to_openai_image_obj(
-                                    image_obj
-                                )
+                            image_obj = convert_to_anthropic_image_obj(_image_url, format=format)
+                            converted_image_url = convert_generic_image_chunk_to_openai_image_obj(image_obj)
+                            if detail is not None:
+                                img_element["image_url"] = {
+                                    "url": converted_image_url,
+                                    "detail": detail,
+                                }
+                            else:
+                                img_element["image_url"] = converted_image_url
+                    elif element.get("type") == "file":
+                        file_element = cast(ChatCompletionFileObject, element)
+                        _file_field = file_element.get("file")
+                        if _file_field is None:
+                            raise litellm.BadRequestError(
+                                message="Content block has type='file' but is missing the required 'file' field",
+                                model=model,
+                                llm_provider="gemini",
                             )
-        return _gemini_convert_messages_with_history(messages=messages)
+                        file_id = _file_field.get("file_id")
+                        if file_id and ("http://" in file_id or "https://" in file_id):
+                            # Convert HTTP/HTTPS file URL to base64 data
+                            try:
+                                base64_data = convert_url_to_base64(file_id)
+                                _file_field["file_data"] = base64_data
+                                _file_field.pop("file_id", None)
+                            except Exception:
+                                # If conversion fails, leave as is and let the API handle it
+                                pass
+        return _gemini_convert_messages_with_history(
+            messages=messages,
+            model=model,
+            litellm_params=litellm_params,
+            custom_llm_provider="gemini",
+        )

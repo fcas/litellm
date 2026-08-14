@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Final
 
 import httpx
 
@@ -7,8 +7,7 @@ from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLogging
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.llms.base_llm.rerank.transformation import BaseRerankConfig
 from litellm.secret_managers.main import get_secret_str
-from litellm.types.rerank import OptionalRerankParams, RerankRequest
-from litellm.types.utils import RerankResponse
+from litellm.types.rerank import OptionalRerankParams, RerankRequest, RerankResponse
 
 from ..common_utils import CohereError
 
@@ -21,7 +20,12 @@ class CohereRerankConfig(BaseRerankConfig):
     def __init__(self) -> None:
         pass
 
-    def get_complete_url(self, api_base: Optional[str], model: str) -> str:
+    def get_complete_url(
+        self,
+        api_base: str | None,
+        model: str,
+        optional_params: dict | None = None,
+    ) -> str:
         if api_base:
             # Remove trailing slashes and ensure clean base URL
             api_base = api_base.rstrip("/")
@@ -42,51 +46,52 @@ class CohereRerankConfig(BaseRerankConfig):
 
     def map_cohere_rerank_params(
         self,
-        non_default_params: Optional[dict],
+        non_default_params: dict | None,
         model: str,
         drop_params: bool,
         query: str,
-        documents: List[Union[str, Dict[str, Any]]],
-        custom_llm_provider: Optional[str] = None,
-        top_n: Optional[int] = None,
-        rank_fields: Optional[List[str]] = None,
-        return_documents: Optional[bool] = True,
-        max_chunks_per_doc: Optional[int] = None,
-    ) -> OptionalRerankParams:
+        documents: list[str | dict[str, Any]],
+        custom_llm_provider: str | None = None,
+        top_n: int | None = None,
+        rank_fields: list[str] | None = None,
+        return_documents: bool | None = True,
+        max_chunks_per_doc: int | None = None,
+        max_tokens_per_doc: int | None = None,
+        instruction: str | None = None,
+    ) -> dict:
         """
         Map Cohere rerank params
 
         No mapping required - returns all supported params
         """
-        return OptionalRerankParams(
-            query=query,
-            documents=documents,
-            top_n=top_n,
-            rank_fields=rank_fields,
-            return_documents=return_documents,
-            max_chunks_per_doc=max_chunks_per_doc,
+        return dict(
+            OptionalRerankParams(
+                query=query,
+                documents=documents,
+                top_n=top_n,
+                rank_fields=rank_fields,
+                return_documents=return_documents,
+                max_chunks_per_doc=max_chunks_per_doc,
+            )
         )
 
     def validate_environment(
         self,
         headers: dict,
         model: str,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
+        optional_params: dict | None = None,
     ) -> dict:
         if api_key is None:
-            api_key = (
-                get_secret_str("COHERE_API_KEY")
-                or get_secret_str("CO_API_KEY")
-                or litellm.cohere_key
-            )
+            api_key = get_secret_str("COHERE_API_KEY") or get_secret_str("CO_API_KEY") or litellm.cohere_key
 
         if api_key is None:
             raise ValueError(
                 "Cohere API key is required. Please set 'COHERE_API_KEY' or 'CO_API_KEY' or 'litellm.cohere_key'"
             )
 
-        default_headers = {
-            "Authorization": f"bearer {api_key}",
+        default_headers: Final = {
+            "Authorization": f"Bearer {api_key}",
             "accept": "application/json",
             "content-type": "application/json",
         }
@@ -101,14 +106,15 @@ class CohereRerankConfig(BaseRerankConfig):
     def transform_rerank_request(
         self,
         model: str,
-        optional_rerank_params: OptionalRerankParams,
+        optional_rerank_params: dict,
         headers: dict,
+        litellm_params: dict | None = None,
     ) -> dict:
         if "query" not in optional_rerank_params:
             raise ValueError("query is required for Cohere rerank")
         if "documents" not in optional_rerank_params:
             raise ValueError("documents is required for Cohere rerank")
-        rerank_request = RerankRequest(
+        rerank_request: Final = RerankRequest(
             model=model,
             query=optional_rerank_params["query"],
             documents=optional_rerank_params["documents"],
@@ -125,7 +131,7 @@ class CohereRerankConfig(BaseRerankConfig):
         raw_response: httpx.Response,
         model_response: RerankResponse,
         logging_obj: LiteLLMLoggingObj,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         request_data: dict = {},
         optional_params: dict = {},
         litellm_params: dict = {},
@@ -136,15 +142,11 @@ class CohereRerankConfig(BaseRerankConfig):
         No transformation required, litellm follows cohere API response format
         """
         try:
-            raw_response_json = raw_response.json()
+            raw_response_json: Final = raw_response.json()
         except Exception:
-            raise CohereError(
-                message=raw_response.text, status_code=raw_response.status_code
-            )
+            raise CohereError(message=raw_response.text, status_code=raw_response.status_code)
 
         return RerankResponse(**raw_response_json)
 
-    def get_error_class(
-        self, error_message: str, status_code: int, headers: Union[dict, httpx.Headers]
-    ) -> BaseLLMException:
+    def get_error_class(self, error_message: str, status_code: int, headers: dict | httpx.Headers) -> BaseLLMException:
         return CohereError(message=error_message, status_code=status_code)

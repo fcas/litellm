@@ -1,135 +1,165 @@
-"use client";
-
+import { useHealthReadinessDetails } from "@/app/(dashboard)/hooks/healthReadiness/useHealthReadinessDetails";
+import { useDisableBouncingIcon } from "@/app/(dashboard)/hooks/useDisableBouncingIcon";
+import { useDisableShowPrompts } from "@/app/(dashboard)/hooks/useDisableShowPrompts";
+import { useWorker } from "@/hooks/useWorker";
+import { getProxyBaseUrl } from "@/components/networking";
+import { migratedHref } from "@/utils/migratedPages";
+import { useTheme } from "@/contexts/ThemeContext";
+import { clearTokenCookies } from "@/utils/cookieUtils";
+import { clearStoredReturnUrl, getLoginUrl } from "@/utils/returnUrlUtils";
+import useProxySettings from "@/app/(dashboard)/hooks/proxySettings/useProxySettings";
+import { DownOutlined, MenuFoldOutlined, MenuUnfoldOutlined } from "@ant-design/icons";
+import { Tag } from "antd";
 import Link from "next/link";
-import Image from "next/image";
-import React, { useEffect, useState } from "react";
-import type { MenuProps } from "antd";
-import { Dropdown, Space } from "antd";
-import { useSearchParams } from "next/navigation";
-import {
-  Button,
-  Text,
-  Metric,
-  Title,
-  TextInput,
-  Grid,
-  Col,
-  Card,
-} from "@tremor/react";
+import React from "react";
+import { BlogDropdown } from "./Navbar/BlogDropdown/BlogDropdown";
+import { CommunityEngagementButtons } from "./Navbar/CommunityEngagementButtons/CommunityEngagementButtons";
+import { NAV_PRODUCT_LINK_CLASS } from "./Navbar/navProductLinkClass";
+import { NotificationsBell } from "./Navbar/NotificationsBell/NotificationsBell";
+import UserDropdown from "./Navbar/UserDropdown/UserDropdown";
+import ViewSwitcher from "./Navbar/ViewSwitcher";
+import WorkerDropdown from "./Navbar/WorkerDropdown/WorkerDropdown";
 
-// Define the props type
 interface NavbarProps {
-  userID: string | null;
-  userRole: string | null;
-  userEmail: string | null;
-  premiumUser: boolean;
-  setProxySettings: React.Dispatch<React.SetStateAction<any>>;
-  proxySettings: any;
+  accessToken: string | null;
+  isPublicPage: boolean;
+  sidebarCollapsed?: boolean;
+  onToggleSidebar?: () => void;
 }
+
 const Navbar: React.FC<NavbarProps> = ({
-  userID,
-  userRole,
-  userEmail,
-  premiumUser,
-  setProxySettings,
-  proxySettings,
+  accessToken,
+  isPublicPage = false,
+  sidebarCollapsed = false,
+  onToggleSidebar,
 }) => {
-  console.log("User ID:", userID);
-  console.log("userEmail:", userEmail);
-  console.log("premiumUser:", premiumUser);
+  const baseUrl = getProxyBaseUrl();
+  const proxySettings = useProxySettings(accessToken);
+  const { logoUrl } = useTheme();
+  const { data: healthData } = useHealthReadinessDetails(accessToken);
+  const version = healthData?.litellm_version;
+  const disableBouncingIcon = useDisableBouncingIcon();
+  const hideCommunityLinks = useDisableShowPrompts();
+  const { isControlPlane, selectedWorker } = useWorker();
+  const showWorkerSwitch = isControlPlane && selectedWorker !== null;
 
-  // const userColors = require('./ui_colors.json') || {};
-  const isLocal = process.env.NODE_ENV === "development";
-  if (isLocal != true) {
-    console.log = function() {};
-  }
-  const proxyBaseUrl = isLocal ? "http://localhost:4000" : null;
-  const imageUrl = isLocal ? "http://localhost:4000/get_image" : "/get_image";
-  let logoutUrl = "";
-
-  console.log("PROXY_settings=", proxySettings);
-
-  if (proxySettings) {
-    if (proxySettings.PROXY_LOGOUT_URL && proxySettings.PROXY_LOGOUT_URL !== undefined) {
-      logoutUrl = proxySettings.PROXY_LOGOUT_URL;
-    }
-  }
-
-  console.log("logoutUrl=", logoutUrl);
+  const imageUrl = logoUrl || `${baseUrl}/get_image`;
 
   const handleLogout = () => {
-    // Clear cookies
-    document.cookie = "token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
-    window.location.href = logoutUrl;
-  }
-   
+    clearTokenCookies();
+    localStorage.removeItem("litellm_selected_worker_id");
+    localStorage.removeItem("litellm_worker_url");
+    window.location.href = proxySettings.PROXY_LOGOUT_URL || "";
+  };
 
-  const items: MenuProps["items"] = [
-    {
-      key: "1",
-      label: (
-        <>
-          <p>Role: {userRole}</p>
-          <p>ID: {userID}</p>
-          <p>Premium User: {String(premiumUser)}</p>
-        </>
-      ),
-    },
-    {
-      key: "2",
-      label: <p onClick={handleLogout}>Logout</p>,
-    }
-  ];
+  const handleWorkerSwitch = (workerId: string) => {
+    clearTokenCookies();
+    clearStoredReturnUrl();
+    localStorage.removeItem("litellm_selected_worker_id");
+    localStorage.removeItem("litellm_worker_url");
+    window.location.href = `${getLoginUrl()}?worker=${encodeURIComponent(workerId)}`;
+  };
 
   return (
-    <nav className="left-0 right-0 top-0 flex justify-between items-center h-12 mb-4">
-      <div className="text-left my-2 absolute top-0 left-0">
-        <div className="flex flex-col items-center">
-          <Link href="/">
-            <button className="text-gray-800 rounded text-center">
-              <img
-                src={imageUrl}
-                width={160}
-                height={160}
-                alt="LiteLLM Brand"
-                className="mr-2"
-              />
-            </button>
-          </Link>
-        </div>
-      </div>
-      <div className="text-right mx-4 my-2 absolute top-0 right-0 flex items-center justify-end space-x-2">
-        {premiumUser ? null : (
-          <div
-            style={{
-              // border: '1px solid #391085',
-              padding: "6px",
-              borderRadius: "8px", // Added border-radius property
-            }}
-          >
-            <a
-              href="https://calendly.com/d/4mp-gd3-k5k/litellm-1-1-onboarding-chat"
-              target="_blank"
-              style={{
-                fontSize: "14px",
-                textDecoration: "underline",
-              }}
-            >
-              Get enterprise license
-            </a>
-          </div>
-        )}
+    <nav className="sticky top-0 z-10 border-b border-gray-200 bg-white">
+      <div className="w-full">
+        <div className="flex h-14 items-center px-4">
+          <div className="flex shrink-0 items-center">
+            {onToggleSidebar && (
+              <button
+                onClick={onToggleSidebar}
+                className="mr-2 flex h-9 w-9 items-center justify-center rounded-md text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900"
+                title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+              >
+                <span className="text-lg">{sidebarCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}</span>
+              </button>
+            )}
 
-        <div
-          style={{
-            border: "1px solid #391085",
-            padding: "6px",
-            borderRadius: "8px", // Added border-radius property
-          }}
-        >
-          <Dropdown menu={{ items }}>
-            <Space>{userEmail ? userEmail : userRole}</Space>
-          </Dropdown>
+            <div className="flex items-center gap-2">
+              <Link href={migratedHref("")} className="flex items-center">
+                <div className="relative">
+                  <div className="flex h-10 max-w-48 items-center justify-center overflow-hidden">
+                    <img
+                      src={imageUrl}
+                      alt="LiteLLM Brand"
+                      className="h-auto max-h-full w-auto max-w-full object-contain"
+                    />
+                  </div>
+                </div>
+              </Link>
+              {version && (
+                <div className="relative">
+                  {!disableBouncingIcon && (
+                    <span
+                      className="absolute -left-2 -top-1 animate-bounce text-lg"
+                      style={{ animationDuration: "2s" }}
+                      title="Thanks for using LiteLLM!"
+                    >
+                      🌑
+                    </span>
+                  )}
+                  <Tag className="relative z-10 cursor-pointer text-xs font-medium">
+                    <a
+                      href="https://docs.litellm.ai/release_notes"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="shrink-0"
+                    >
+                      v{version}
+                    </a>
+                  </Tag>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {!isPublicPage && (
+            <div className="ml-4 flex shrink-0 items-center border-l border-gray-200 pl-4">
+              <ViewSwitcher />
+            </div>
+          )}
+
+          <div className="ml-auto flex min-w-0 flex-1 items-center justify-end gap-4">
+            {showWorkerSwitch && (
+              <div className="flex shrink-0 items-center">
+                <WorkerDropdown onWorkerSwitch={handleWorkerSwitch} />
+              </div>
+            )}
+
+            <nav
+              aria-label="Product documentation"
+              className={`flex min-w-0 items-center gap-2 ${showWorkerSwitch ? "border-l border-gray-200 pl-4" : ""}`}
+            >
+              <a
+                href="https://docs.litellm.ai/docs/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className={NAV_PRODUCT_LINK_CLASS}
+              >
+                Docs
+                {/* Layout parity with Blog chevron — intentional single-level link */}
+                <DownOutlined className="pointer-events-none text-[10px] opacity-0" aria-hidden />
+              </a>
+              <BlogDropdown />
+            </nav>
+
+            {!hideCommunityLinks && (
+              <div className="flex shrink-0 items-center border-l border-gray-200 pl-4">
+                <CommunityEngagementButtons />
+              </div>
+            )}
+
+            {!isPublicPage && (
+              <div className="flex shrink-0 items-center border-l border-gray-200 pl-4">
+                <div className="flex items-center gap-0.5 rounded-lg bg-gray-50 px-1 py-0 transition-colors hover:bg-gray-100">
+                  <NotificationsBell />
+                  <span className="mx-0.5 h-6 w-px shrink-0 bg-gray-200" aria-hidden />
+                  <UserDropdown onLogout={handleLogout} />
+                </div>
+              </div>
+            )}
+          </div>
+          {/* Dark mode toggle: keep disabled until the dashboard supports dark styles end-to-end. */}
         </div>
       </div>
     </nav>

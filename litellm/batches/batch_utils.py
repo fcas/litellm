@@ -1,293 +1,480 @@
-import asyncio
-import datetime
 import json
-import threading
-from typing import Any, List, Literal, Optional
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
+from typing import Any, Final, Literal
 
 import litellm
 from litellm._logging import verbose_logger
-from litellm.constants import (
-    BATCH_STATUS_POLL_INTERVAL_SECONDS,
-    BATCH_STATUS_POLL_MAX_ATTEMPTS,
-)
-from litellm.files.main import afile_content
-from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
+from litellm.litellm_core_utils.llm_cost_calc.utils import _parse_prompt_tokens_details
 from litellm.types.llms.openai import Batch
-from litellm.types.utils import StandardLoggingPayload, Usage
+from litellm.types.utils import CallTypes, ModelInfo, Usage
+from litellm.utils import token_counter
 
 
-async def batches_async_logging(
-    batch_id: str,
-    custom_llm_provider: Literal["openai", "azure", "vertex_ai"] = "openai",
-    logging_obj: Optional[LiteLLMLoggingObj] = None,
-    **kwargs,
-):
+async def calculate_batch_cost_and_usage(
+    file_content_dictionary: list[dict],
+    custom_llm_provider: Literal["openai", "azure", "vertex_ai", "hosted_vllm", "anthropic"],
+    model_name: str | None = None,
+    model_info: ModelInfo | None = None,
+) -> tuple[float, Usage, list[str]]:
     """
-    Async Job waits for the batch to complete and then logs the completed batch usage - cost, total tokens, prompt tokens, completion tokens
+    Calculate the cost and usage of a batch.
 
-
-    Polls retrieve_batch until it returns a batch with status "completed" or "failed"
+    Args:
+        model_info: Optional deployment-level model info with custom batch
+            pricing. Threaded through to batch_cost_calculator so that
+            deployment-specific pricing (e.g. input_cost_per_token_batches)
+            is used instead of the global cost map.
     """
-    from .main import aretrieve_batch
+    if (
+        custom_llm_provider == "vertex_ai"
+        and model_name
+        and getattr(litellm, "disable_vertex_batch_output_transformation", False)
+    ):
+        batch_cost, batch_usage = calculate_vertex_ai_batch_cost_and_usage(file_content_dictionary, model_name)
+        return batch_cost, batch_usage, [model_name]
 
-    verbose_logger.debug(
-        ".....in _batches_async_logging... polling retrieve to get batch status"
+    return _aggregate_batch_cost_usage_models(
+        entries=file_content_dictionary,
+        custom_llm_provider=custom_llm_provider,
+        model_name=model_name,
+        model_info=model_info,
     )
-    if logging_obj is None:
-        raise ValueError(
-            "logging_obj is None cannot calculate cost / log batch creation event"
-        )
-    for _ in range(BATCH_STATUS_POLL_MAX_ATTEMPTS):
-        try:
-            start_time = datetime.datetime.now()
-            batch: Batch = await aretrieve_batch(batch_id, custom_llm_provider)
-            verbose_logger.debug(
-                "in _batches_async_logging... batch status= %s", batch.status
-            )
-
-            if batch.status == "completed":
-                end_time = datetime.datetime.now()
-                await _handle_completed_batch(
-                    batch=batch,
-                    custom_llm_provider=custom_llm_provider,
-                    logging_obj=logging_obj,
-                    start_time=start_time,
-                    end_time=end_time,
-                    **kwargs,
-                )
-                break
-            elif batch.status == "failed":
-                pass
-        except Exception as e:
-            verbose_logger.error("error in batches_async_logging", e)
-        await asyncio.sleep(BATCH_STATUS_POLL_INTERVAL_SECONDS)
 
 
 async def _handle_completed_batch(
     batch: Batch,
-    custom_llm_provider: Literal["openai", "azure", "vertex_ai"],
-    logging_obj: LiteLLMLoggingObj,
-    start_time: datetime.datetime,
-    end_time: datetime.datetime,
-    **kwargs,
-) -> None:
-    """Helper function to process a completed batch and handle logging"""
-    # Get batch results
-    file_content_dictionary = await _get_batch_output_file_content_as_dictionary(
-        batch, custom_llm_provider
-    )
+    custom_llm_provider: Literal["openai", "azure", "vertex_ai", "hosted_vllm", "anthropic"],
+    model_name: str | None = None,
+    litellm_params: dict | None = None,
+) -> tuple[float, Usage, list[str]]:
+    """Fetch a completed batch's output file and aggregate its cost, usage, and
+    models in a single pass over the JSONL lines, so the parsed file content is
+    never materialized in memory.
 
-    # Calculate costs and usage
-    batch_cost = await _batch_cost_calculator(
-        custom_llm_provider=custom_llm_provider,
-        file_content_dictionary=file_content_dictionary,
-    )
-    batch_usage = _get_batch_job_total_usage_from_file_content(
-        file_content_dictionary=file_content_dictionary,
-        custom_llm_provider=custom_llm_provider,
-    )
+    Args:
+        batch: The batch object
+        custom_llm_provider: The LLM provider
+        model_name: Optional model name
+        litellm_params: Optional litellm parameters containing credentials (api_key, api_base, etc.)
+    """
+    file_content = await _fetch_batch_output_file_content(batch, custom_llm_provider, litellm_params=litellm_params)
 
-    # Handle logging
-    await _log_completed_batch(
-        logging_obj=logging_obj,
-        batch_usage=batch_usage,
-        batch_cost=batch_cost,
-        start_time=start_time,
-        end_time=end_time,
-        **kwargs,
-    )
-
-
-async def _log_completed_batch(
-    logging_obj: LiteLLMLoggingObj,
-    batch_usage: Usage,
-    batch_cost: float,
-    start_time: datetime.datetime,
-    end_time: datetime.datetime,
-    **kwargs,
-) -> None:
-    """Helper function to handle all logging operations for a completed batch"""
-    logging_obj.call_type = "batch_success"
-
-    standard_logging_object = _create_standard_logging_object_for_completed_batch(
-        kwargs=kwargs,
-        start_time=start_time,
-        end_time=end_time,
-        logging_obj=logging_obj,
-        batch_usage_object=batch_usage,
-        response_cost=batch_cost,
-    )
-
-    logging_obj.model_call_details["standard_logging_object"] = standard_logging_object
-
-    # Launch async and sync logging handlers
-    asyncio.create_task(
-        logging_obj.async_success_handler(
-            result=None,
-            start_time=start_time,
-            end_time=end_time,
-            cache_hit=None,
+    if (
+        custom_llm_provider == "vertex_ai"
+        and model_name
+        and getattr(litellm, "disable_vertex_batch_output_transformation", False)
+    ):
+        batch_cost, batch_usage = calculate_vertex_ai_batch_cost_and_usage(
+            _get_file_content_as_dictionary(file_content), model_name
         )
-    )
-    threading.Thread(
-        target=logging_obj.success_handler,
-        args=(None, start_time, end_time),
-    ).start()
+        return batch_cost, batch_usage, [model_name]
 
-
-async def _batch_cost_calculator(
-    file_content_dictionary: List[dict],
-    custom_llm_provider: Literal["openai", "azure", "vertex_ai"] = "openai",
-) -> float:
-    """
-    Calculate the cost of a batch based on the output file id
-    """
-    if custom_llm_provider == "vertex_ai":
-        raise ValueError("Vertex AI does not support file content retrieval")
-    total_cost = _get_batch_job_cost_from_file_content(
-        file_content_dictionary=file_content_dictionary,
+    return _aggregate_batch_cost_usage_models(
+        entries=_iter_batch_input_entries(file_content),
         custom_llm_provider=custom_llm_provider,
+        model_name=model_name,
     )
-    verbose_logger.debug("total_cost=%s", total_cost)
-    return total_cost
 
 
-async def _get_batch_output_file_content_as_dictionary(
-    batch: Batch,
-    custom_llm_provider: Literal["openai", "azure", "vertex_ai"] = "openai",
-) -> List[dict]:
-    """
-    Get the batch output file content as a list of dictionaries
-    """
-    if custom_llm_provider == "vertex_ai":
-        raise ValueError("Vertex AI does not support file content retrieval")
-
-    if batch.output_file_id is None:
-        raise ValueError("Output file id is None cannot retrieve file content")
-
-    _file_content = await afile_content(
-        file_id=batch.output_file_id,
-        custom_llm_provider=custom_llm_provider,
-    )
-    return _get_file_content_as_dictionary(_file_content.content)
+@dataclass(frozen=True, slots=True)
+class _BatchOutputLineStats:
+    cost: float
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    model: str | None
 
 
-def _get_file_content_as_dictionary(file_content: bytes) -> List[dict]:
-    """
-    Get the file content as a list of dictionaries from JSON Lines format
-    """
-    try:
-        _file_content_str = file_content.decode("utf-8")
-        # Split by newlines and parse each line as a separate JSON object
-        json_objects = []
-        for line in _file_content_str.strip().split("\n"):
-            if line:  # Skip empty lines
-                json_objects.append(json.loads(line))
-        verbose_logger.debug("json_objects=%s", json.dumps(json_objects, indent=4))
-        return json_objects
-    except Exception as e:
-        raise e
+def _iter_successful_output_line_stats(
+    entries: Iterable[dict],
+    custom_llm_provider: Literal["openai", "azure", "vertex_ai", "hosted_vllm", "anthropic", "bedrock"],
+    model_name: str | None,
+    model_info: ModelInfo | None,
+) -> Iterator[_BatchOutputLineStats]:
+    from litellm.cost_calculator import batch_cost_calculator
 
-
-def _get_batch_job_cost_from_file_content(
-    file_content_dictionary: List[dict],
-    custom_llm_provider: Literal["openai", "azure", "vertex_ai"] = "openai",
-) -> float:
-    """
-    Get the cost of a batch job from the file content
-    """
-    try:
-        total_cost: float = 0.0
-        # parse the file content as json
-        verbose_logger.debug(
-            "file_content_dictionary=%s", json.dumps(file_content_dictionary, indent=4)
+    for entry in entries:
+        if not _batch_response_was_successful(entry, custom_llm_provider):
+            continue
+        response_body = _get_response_from_batch_job_output_file(entry, custom_llm_provider)
+        usage = _get_batch_job_usage_from_response_body(response_body, custom_llm_provider)
+        prompt_details = _parse_prompt_tokens_details(usage)
+        raw_model = response_body.get("model")
+        response_model = raw_model if isinstance(raw_model, str) and raw_model else None
+        if model_info is not None or custom_llm_provider in ("anthropic", "bedrock"):
+            if custom_llm_provider == "bedrock" and model_name:
+                cost_model = model_name
+            else:
+                cost_model = response_model or model_name or ""
+            prompt_cost, completion_cost = batch_cost_calculator(
+                usage=usage,
+                model=cost_model,
+                custom_llm_provider=custom_llm_provider,
+                model_info=model_info,
+            )
+            line_cost = prompt_cost + completion_cost
+        else:
+            line_cost = litellm.completion_cost(
+                completion_response=response_body,
+                custom_llm_provider=custom_llm_provider,
+                call_type=CallTypes.aretrieve_batch.value,
+            )
+        yield _BatchOutputLineStats(
+            cost=line_cost,
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            total_tokens=usage.total_tokens,
+            cache_read_tokens=prompt_details["cache_hit_tokens"],
+            cache_creation_tokens=prompt_details["cache_creation_tokens"],
+            model=response_model,
         )
-        for _item in file_content_dictionary:
-            if _batch_response_was_successful(_item):
-                _response_body = _get_response_from_batch_job_output_file(_item)
-                total_cost += litellm.completion_cost(
-                    completion_response=_response_body,
-                    custom_llm_provider=custom_llm_provider,
-                )
-                verbose_logger.debug("total_cost=%s", total_cost)
-        return total_cost
-    except Exception as e:
-        verbose_logger.error("error in _get_batch_job_cost_from_file_content", e)
-        raise e
 
 
-def _get_batch_job_total_usage_from_file_content(
-    file_content_dictionary: List[dict],
-    custom_llm_provider: Literal["openai", "azure", "vertex_ai"] = "openai",
-) -> Usage:
+def _aggregate_batch_cost_usage_models(
+    entries: Iterable[dict],
+    custom_llm_provider: Literal["openai", "azure", "vertex_ai", "hosted_vllm", "anthropic", "bedrock"],
+    model_name: str | None = None,
+    model_info: ModelInfo | None = None,
+) -> tuple[float, Usage, list[str]]:
+    """Aggregate cost, usage, and models from batch output entries in a single
+    pass, holding one small stats record per line instead of the parsed file."""
+    line_stats: Final = tuple(_iter_successful_output_line_stats(entries, custom_llm_provider, model_name, model_info))
+
+    cache_token_params: Final = {
+        key: tokens
+        for key, tokens in (
+            ("cache_read_input_tokens", sum(stats.cache_read_tokens for stats in line_stats)),
+            ("cache_creation_input_tokens", sum(stats.cache_creation_tokens for stats in line_stats)),
+        )
+        if tokens > 0
+    }
+    batch_usage: Final = Usage(
+        total_tokens=sum(stats.total_tokens for stats in line_stats),
+        prompt_tokens=sum(stats.prompt_tokens for stats in line_stats),
+        completion_tokens=sum(stats.completion_tokens for stats in line_stats),
+        **cache_token_params,
+    )
+    batch_models: Final = [model_name] if model_name else [stats.model for stats in line_stats if stats.model]
+    total_cost: Final = sum((stats.cost for stats in line_stats), 0.0)
+    verbose_logger.debug("batch output aggregate: cost=%s usage=%s models=%s", total_cost, batch_usage, batch_models)
+    return total_cost, batch_usage, batch_models
+
+
+def calculate_vertex_ai_batch_cost_and_usage(
+    vertex_ai_batch_responses: list[dict],
+    model_name: str | None = None,
+) -> tuple[float, Usage]:
     """
-    Get the tokens of a batch job from the file content
+    Calculate both cost and usage from raw Vertex AI batch responses.
+
+    Used only when ``litellm.disable_vertex_batch_output_transformation = True``.
+    In that case the GCS predictions.jsonl is returned as-is, with each line in
+    the native Vertex format:
+
+      {"request": ..., "response": {"candidates": [...], "usageMetadata": {...}}}
+
+    usageMetadata contains promptTokenCount, candidatesTokenCount, totalTokenCount.
     """
-    total_tokens: int = 0
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    for _item in file_content_dictionary:
-        if _batch_response_was_successful(_item):
-            _response_body = _get_response_from_batch_job_output_file(_item)
-            usage: Usage = _get_batch_job_usage_from_response_body(_response_body)
-            total_tokens += usage.total_tokens
-            prompt_tokens += usage.prompt_tokens
-            completion_tokens += usage.completion_tokens
-    return Usage(
+    from litellm.cost_calculator import batch_cost_calculator
+
+    total_cost = 0.0
+    total_tokens = 0
+    prompt_tokens = 0
+    completion_tokens = 0
+    actual_model_name: Final = model_name or "gemini-2.0-flash-001"
+
+    for response in vertex_ai_batch_responses:
+        response_body = response.get("response")
+        if response_body is None:
+            continue
+
+        usage_metadata = response_body.get("usageMetadata", {})
+        _prompt = usage_metadata.get("promptTokenCount", 0) or 0
+        _completion = usage_metadata.get("candidatesTokenCount", 0) or 0
+        _total = usage_metadata.get("totalTokenCount", 0) or (_prompt + _completion)
+
+        line_usage = Usage(
+            prompt_tokens=_prompt,
+            completion_tokens=_completion,
+            total_tokens=_total,
+        )
+
+        try:
+            p_cost, c_cost = batch_cost_calculator(
+                usage=line_usage,
+                model=actual_model_name,
+                custom_llm_provider="vertex_ai",
+            )
+            total_cost += p_cost + c_cost
+        except Exception as e:
+            verbose_logger.debug("vertex_ai batch cost calculation error for line: %s", str(e))
+
+        prompt_tokens += _prompt
+        completion_tokens += _completion
+        total_tokens += _total
+
+    verbose_logger.info(
+        "vertex_ai batch cost: cost=%s, prompt=%d, completion=%d, total=%d",
+        total_cost,
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+    )
+
+    return total_cost, Usage(
         total_tokens=total_tokens,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
     )
 
 
-def _get_batch_job_usage_from_response_body(response_body: dict) -> Usage:
+async def _fetch_batch_output_file_content(
+    batch: Batch,
+    custom_llm_provider: Literal["openai", "azure", "vertex_ai", "hosted_vllm", "anthropic"] = "openai",
+    litellm_params: dict | None = None,
+) -> bytes:
+    """
+    Fetch the batch output file and return its raw JSONL bytes
+
+    Args:
+        batch: The batch object
+        custom_llm_provider: The LLM provider
+        litellm_params: Optional litellm parameters containing credentials (api_key, api_base, etc.)
+                       Required for Azure and other providers that need authentication
+    """
+    from litellm.files.main import afile_content
+    from litellm.proxy.openai_files_endpoints.common_utils import (
+        _is_base64_encoded_unified_file_id,
+    )
+
+    if batch.output_file_id is None:
+        raise ValueError("Output file id is None cannot retrieve file content")
+
+    file_id = batch.output_file_id
+    is_base64_unified_file_id: Final = _is_base64_encoded_unified_file_id(file_id)
+    if is_base64_unified_file_id:
+        try:
+            file_id = is_base64_unified_file_id.split("llm_output_file_id,")[1].split(";")[0]
+            verbose_logger.debug("Extracted LLM output file ID from unified file ID: %s", file_id)
+        except (IndexError, AttributeError) as e:
+            verbose_logger.error(
+                "Failed to extract LLM output file ID from unified file ID: %s, error: %s", batch.output_file_id, e
+            )
+
+    # Build kwargs for afile_content with credentials from litellm_params
+    file_content_kwargs: Final = {
+        "file_id": file_id,
+        "custom_llm_provider": custom_llm_provider,
+    }
+
+    # Extract and add credentials for file access
+    credentials: Final = _extract_file_access_credentials(litellm_params)
+    file_content_kwargs.update(credentials)
+
+    _file_content: Final = await afile_content(**file_content_kwargs)
+    return _file_content.content
+
+
+def _extract_file_access_credentials(litellm_params: dict | None) -> dict:
+    """
+    Extract credentials from litellm_params for file access operations.
+
+    This method extracts relevant authentication and configuration parameters
+    needed for accessing files across different providers (Azure, Vertex AI, etc.).
+
+    Args:
+        litellm_params: Dictionary containing litellm parameters with credentials
+
+    Returns:
+        Dictionary containing only the credentials needed for file access
+    """
+    credentials: Final = {}
+
+    if litellm_params:
+        # List of credential keys that should be passed to file operations
+        credential_keys: Final = [
+            "api_key",
+            "api_base",
+            "api_version",
+            "organization",
+            "azure_ad_token",
+            "azure_ad_token_provider",
+            "vertex_project",
+            "vertex_location",
+            "vertex_credentials",
+            "gcs_bucket_name",
+            "bucket_name",
+            "timeout",
+            "max_retries",
+        ]
+        for key in credential_keys:
+            if key in litellm_params:
+                credentials[key] = litellm_params[key]
+
+    return credentials
+
+
+def _get_file_content_as_dictionary(file_content: bytes) -> list[dict]:
+    """
+    Get the file content as a list of dictionaries from JSON Lines format
+    """
+    return list(_iter_batch_input_entries(file_content))
+
+
+def _iter_batch_input_lines(file_content: bytes) -> Iterator[bytes]:
+    """
+    Yield non-empty JSONL lines (unparsed) one at a time, so a caller can parse
+    each row in its own try/except and a single malformed line cannot abort the
+    whole pass. Peak memory stays bounded for large batch files.
+    """
+    start, length, newline = 0, len(file_content), ord("\n")
+    while start < length:
+        idx = file_content.find(newline, start)
+        if idx == -1:
+            chunk, start = file_content[start:], length
+        else:
+            chunk, start = file_content[start:idx], idx + 1
+        line = chunk.strip()
+        if line:
+            yield line
+
+
+def _iter_batch_input_entries(file_content: bytes) -> Iterator[dict]:
+    """
+    Yield parsed batch input JSONL entries one at a time without materializing the
+    whole file as a list, so peak memory stays bounded. Raises on a malformed line;
+    callers that must survive bad rows should iterate ``_iter_batch_input_lines``
+    and parse per-row instead.
+    """
+    for line in _iter_batch_input_lines(file_content):
+        yield json.loads(line)
+
+
+# A batch request's input tokens scale roughly with its serialized size, so this
+# is a conservative per-row fallback when the token counter cannot measure a row.
+_BATCH_TOKEN_ESTIMATE_BYTES_PER_TOKEN: Final = 4
+
+
+def _estimate_batch_entry_tokens(raw_line: bytes) -> int:
+    """Conservative token estimate for a batch row the token counter cannot measure
+    (or that cannot be parsed). Keeps the batch token total non-zero so a crafted
+    row cannot evade the TPM limit, without hard-rejecting a legitimate batch."""
+    return max(1, len(raw_line) // _BATCH_TOKEN_ESTIMATE_BYTES_PER_TOKEN)
+
+
+def _count_entry_tokens(
+    entry: dict,
+    model_name: str | None = None,
+) -> int:
+    """Token-count a single batch input entry's body (chat / text / embedding)."""
+    body: Final = entry.get("body", {}) or {}
+    model: Final = body.get("model", model_name or "")
+
+    messages: Final = body.get("messages")
+    if messages:
+        return token_counter(model=model, messages=messages)
+
+    prompt: Final = body.get("prompt")
+    if prompt:
+        return _count_prompt_or_input_tokens(model=model, value=prompt)
+
+    input_data: Final = body.get("input")
+    if input_data:
+        return _count_prompt_or_input_tokens(model=model, value=input_data)
+
+    return 0
+
+
+def _count_prompt_or_input_tokens(model: str, value: Any) -> int:
+    """Token-count a ``prompt`` / ``input`` field that the OpenAI batch
+    schema allows in four shapes:
+
+    - ``str``: a single text prompt.
+    - ``list[str]``: multiple text prompts.
+    - ``list[int]``: a pre-tokenized prompt (each int counts as 1 token).
+    - ``list[list[int]]``: multiple pre-tokenized prompts.
+
+    Pre-fix only the string shapes were counted, so a caller could send
+    a large ``list[list[int]]`` payload and slip past TPM rate limits
+    with a recorded cost of zero tokens.
+    """
+    if isinstance(value, str):
+        return token_counter(model=model, text=value)
+    if isinstance(value, list):
+        total = 0
+        for chunk in value:
+            if isinstance(chunk, str):
+                total += token_counter(model=model, text=chunk)
+            elif isinstance(chunk, int):
+                # Single pre-tokenized prompt at the top level: each
+                # int counts as one token.
+                total += 1
+            elif isinstance(chunk, list):
+                # Nested pre-tokenized prompt: every int contributes a
+                # token. Mixed string/int items still count.
+                total += sum(1 if isinstance(t, int) else 0 for t in chunk)
+                total += sum(token_counter(model=model, text=t) for t in chunk if isinstance(t, str))
+        return total
+    return 0
+
+
+def _get_batch_job_usage_from_response_body(response_body: dict, custom_llm_provider: str = "openai") -> Usage:
     """
     Get the tokens of a batch job from the response body
     """
-    _usage_dict = response_body.get("usage", None) or {}
-    usage: Usage = Usage(**_usage_dict)
+    if custom_llm_provider in ("anthropic", "bedrock"):
+        from litellm.llms.anthropic.chat.transformation import AnthropicConfig
+
+        return AnthropicConfig().calculate_usage(
+            usage_object=response_body.get("usage", None) or {},
+            reasoning_content=None,
+        )
+    from litellm.responses.utils import ResponseAPILoggingUtils
+
+    _usage_dict: Final = response_body.get("usage", None) or {}
+    if ResponseAPILoggingUtils._is_response_api_usage(_usage_dict):
+        return ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(_usage_dict)
+    usage: Final[Usage] = Usage(**_usage_dict)
     return usage
 
 
-def _get_response_from_batch_job_output_file(batch_job_output_file: dict) -> Any:
+def _get_anthropic_result_from_batch_results_line(batch_results_line: dict) -> dict:
+    """
+    Get the ``result`` object from a line of an Anthropic message batch results JSONL file.
+
+    Anthropic batch results lines look like:
+    ``{"custom_id": ..., "result": {"type": "succeeded", "message": {..., "usage": {...}}}}``
+    """
+    return batch_results_line.get("result", None) or {}
+
+
+def _get_response_from_batch_job_output_file(batch_job_output_file: dict, custom_llm_provider: str = "openai") -> Any:
     """
     Get the response from the batch job output file
     """
-    _response: dict = batch_job_output_file.get("response", None) or {}
-    _response_body = _response.get("body", None) or {}
+    if custom_llm_provider == "anthropic":
+        return _get_anthropic_result_from_batch_results_line(batch_job_output_file).get("message", None) or {}
+    if custom_llm_provider == "bedrock":
+        return batch_job_output_file.get("modelOutput", None) or {}
+    _response: Final[dict] = batch_job_output_file.get("response", None) or {}
+    _response_body: Final = _response.get("body", None) or {}
     return _response_body
 
 
-def _batch_response_was_successful(batch_job_output_file: dict) -> bool:
+def _batch_response_was_successful(batch_job_output_file: dict, custom_llm_provider: str = "openai") -> bool:
     """
-    Check if the batch job response status == 200
+    Check if the batch job response was successful
+
+    OpenAI-shaped output rows report ``response.status_code == 200``; Anthropic
+    message batch results lines report ``result.type == "succeeded"``; Bedrock
+    batch output lines report ``modelOutput`` (and no ``error``).
     """
-    _response: dict = batch_job_output_file.get("response", None) or {}
+    if custom_llm_provider == "anthropic":
+        return _get_anthropic_result_from_batch_results_line(batch_job_output_file).get("type") == "succeeded"
+    if custom_llm_provider == "bedrock":
+        return batch_job_output_file.get("modelOutput") is not None and batch_job_output_file.get("error") is None
+    _response: Final[dict] = batch_job_output_file.get("response", None) or {}
     return _response.get("status_code", None) == 200
-
-
-def _create_standard_logging_object_for_completed_batch(
-    kwargs: dict,
-    start_time: datetime.datetime,
-    end_time: datetime.datetime,
-    logging_obj: LiteLLMLoggingObj,
-    batch_usage_object: Usage,
-    response_cost: float,
-) -> StandardLoggingPayload:
-    """
-    Create a standard logging object for a completed batch
-    """
-    standard_logging_object = logging_obj.model_call_details.get(
-        "standard_logging_object", None
-    )
-
-    if standard_logging_object is None:
-        raise ValueError("unable to create standard logging object for completed batch")
-
-    # Add Completed Batch Job Usage and Response Cost
-    standard_logging_object["call_type"] = "batch_success"
-    standard_logging_object["response_cost"] = response_cost
-    standard_logging_object["total_tokens"] = batch_usage_object.total_tokens
-    standard_logging_object["prompt_tokens"] = batch_usage_object.prompt_tokens
-    standard_logging_object["completion_tokens"] = batch_usage_object.completion_tokens
-    return standard_logging_object

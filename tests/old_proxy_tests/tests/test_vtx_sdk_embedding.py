@@ -37,7 +37,7 @@ class CredentialsWrapper(Credentials):
 credentials = CredentialsWrapper(token=LITELLM_PROXY_API_KEY)
 
 vertexai.init(
-    project="adroit-crow-413218",
+    project="litellm-ci-cd",
     location="us-central1",
     api_endpoint=LITELLM_PROXY_BASE,
     credentials=credentials,

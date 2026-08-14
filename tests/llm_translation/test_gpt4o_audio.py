@@ -11,7 +11,6 @@ sys.path.insert(
 
 import httpx
 import pytest
-from respx import MockRouter
 
 import litellm
 from litellm import Choices, Message, ModelResponse
@@ -34,8 +33,10 @@ async def check_streaming_response(completion):
     _audio_id = None
     async for chunk in completion:
         print(chunk)
+        if len(chunk.choices) == 0:
+            continue
         _choice: StreamingChoices = chunk.choices[0]
-        if _choice.delta.audio is not None:
+        if _choice.delta is not None and _choice.delta.audio is not None:
             if _choice.delta.audio.get("data") is not None:
                 _audio_bytes = _choice.delta.audio["data"]
             if _choice.delta.audio.get("transcript") is not None:
@@ -58,7 +59,7 @@ async def test_audio_output_from_model(stream):
     litellm.set_verbose = False
     try:
         completion = await litellm.acompletion(
-            model="gpt-4o-audio-preview",
+            model="gpt-audio-1.5",
             modalities=["text", "audio"],
             audio={"voice": "alloy", "format": "pcm16"},
             messages=[{"role": "user", "content": "response in 1 word - yes or no"}],
@@ -67,6 +68,15 @@ async def test_audio_output_from_model(stream):
     except litellm.Timeout as e:
         print(e)
         pytest.skip("Skipping test due to timeout")
+    except Exception as e:
+        err = str(e).lower()
+        if (
+            "model_not_found" in err
+            or "does not exist" in err
+            or "openai-internal" in err
+        ):
+            pytest.skip(f"Skipping - upstream gpt-audio-1.5 unavailable: {e}")
+        raise
 
     if stream is True:
         await check_streaming_response(completion)
@@ -81,12 +91,14 @@ async def test_audio_output_from_model(stream):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [True, False])
-async def test_audio_input_to_model(stream):
+@pytest.mark.parametrize("model", ["gpt-audio-1.5"])
+async def test_audio_input_to_model(stream, model):
     # Fetch the audio file and convert it to a base64 encoded string
     audio_format = "pcm16"
     if stream is False:
         audio_format = "wav"
-    litellm.set_verbose = True
+    litellm._turn_on_debug()
+    litellm.drop_params = True
     url = "https://openaiassets.blob.core.windows.net/$web/API/docs/audio/alloy.wav"
     response = requests.get(url)
     response.raise_for_status()
@@ -94,7 +106,7 @@ async def test_audio_input_to_model(stream):
     encoded_string = base64.b64encode(wav_data).decode("utf-8")
     try:
         completion = await litellm.acompletion(
-            model="gpt-4o-audio-preview",
+            model=model,
             modalities=["text", "audio"],
             audio={"voice": "alloy", "format": audio_format},
             stream=stream,
@@ -114,7 +126,15 @@ async def test_audio_input_to_model(stream):
     except litellm.Timeout as e:
         print(e)
         pytest.skip("Skipping test due to timeout")
-
+    except Exception as e:
+        err = str(e).lower()
+        if (
+            "model_not_found" in err
+            or "does not exist" in err
+            or "openai-internal" in err
+        ):
+            pytest.skip(f"Skipping - upstream gpt-audio-1.5 unavailable: {e}")
+        raise
     if stream is True:
         await check_streaming_response(completion)
     else:

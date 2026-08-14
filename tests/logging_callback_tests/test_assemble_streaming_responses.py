@@ -24,9 +24,16 @@ import pytest
 from respx import MockRouter
 
 import litellm
-from litellm import Choices, Message, ModelResponse, TextCompletionResponse, TextChoices
+from litellm import (
+    Choices,
+    Message,
+    ModelResponse,
+    ModelResponseStream,
+    TextCompletionResponse,
+    TextChoices,
+)
 
-from litellm.litellm_core_utils.litellm_logging import (
+from litellm.litellm_core_utils.logging_utils import (
     _assemble_complete_response_from_streaming_chunks,
 )
 
@@ -58,12 +65,12 @@ def test_assemble_complete_response_from_streaming_chunks_1(is_async):
             )
         ],
         "created": 1721353246,
-        "model": "gpt-3.5-turbo",
+        "model": "gpt-5-mini",
         "object": "chat.completion.chunk",
         "system_fingerprint": None,
         "usage": None,
     }
-    chunk = litellm.ModelResponse(**chunk, stream=True)
+    chunk = ModelResponseStream(**chunk)
     complete_streaming_response = _assemble_complete_response_from_streaming_chunks(
         result=chunk,
         start_time=datetime.now(),
@@ -98,12 +105,12 @@ def test_assemble_complete_response_from_streaming_chunks_1(is_async):
             )
         ],
         "created": 1721353246,
-        "model": "gpt-3.5-turbo",
+        "model": "gpt-5-mini",
         "object": "chat.completion.chunk",
         "system_fingerprint": None,
         "usage": None,
     }
-    chunk = litellm.ModelResponse(**chunk, stream=True)
+    chunk = ModelResponseStream(**chunk)
     complete_streaming_response = _assemble_complete_response_from_streaming_chunks(
         result=chunk,
         start_time=datetime.now(),
@@ -159,12 +166,12 @@ def test_assemble_complete_response_from_streaming_chunks_2(is_async):
             )
         ],
         "created": 1721353246,
-        "model": "gpt-3.5-turbo",
+        "model": "gpt-5-mini",
         "object": "chat.completion.chunk",
         "system_fingerprint": None,
         "usage": None,
     }
-    chunk = litellm.ModelResponse(**chunk, stream=True)
+    chunk = ModelResponseStream(**chunk)
     chunk = _text_completion_stream_wrapper.convert_to_text_completion_object(chunk)
 
     complete_streaming_response = _assemble_complete_response_from_streaming_chunks(
@@ -201,12 +208,12 @@ def test_assemble_complete_response_from_streaming_chunks_2(is_async):
             )
         ],
         "created": 1721353246,
-        "model": "gpt-3.5-turbo",
+        "model": "gpt-5-mini",
         "object": "chat.completion.chunk",
         "system_fingerprint": None,
         "usage": None,
     }
-    chunk = litellm.ModelResponse(**chunk, stream=True)
+    chunk = ModelResponseStream(**chunk)
     chunk = _text_completion_stream_wrapper.convert_to_text_completion_object(chunk)
     complete_streaming_response = _assemble_complete_response_from_streaming_chunks(
         result=chunk,
@@ -256,12 +263,12 @@ def test_assemble_complete_response_from_streaming_chunks_3(is_async):
             )
         ],
         "created": 1721353246,
-        "model": "gpt-3.5-turbo",
+        "model": "gpt-5-mini",
         "object": "chat.completion.chunk",
         "system_fingerprint": None,
         "usage": None,
     }
-    chunk = litellm.ModelResponse(**chunk, stream=True)
+    chunk = ModelResponseStream(**chunk)
     complete_streaming_response = _assemble_complete_response_from_streaming_chunks(
         result=chunk,
         start_time=datetime.now(),
@@ -333,12 +340,12 @@ def test_assemble_complete_response_from_streaming_chunks_4(is_async):
             )
         ],
         "created": 1721353246,
-        "model": "gpt-3.5-turbo",
+        "model": "gpt-5-mini",
         "object": "chat.completion.chunk",
         "system_fingerprint": None,
         "usage": None,
     }
-    chunk = litellm.ModelResponse(**chunk, stream=True)
+    chunk = ModelResponseStream(**chunk)
 
     # remove attribute id from chunk
     del chunk.object

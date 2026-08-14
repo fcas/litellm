@@ -15,7 +15,7 @@ db = Prisma(
 )
 
 
-async def check_view_exists():  # noqa: PLR0915
+async def check_view_exists():
     """
     Checks if the LiteLLM_VerificationTokenView and MonthlyGlobalSpend exists in the user's db.
 
@@ -34,8 +34,7 @@ async def check_view_exists():  # noqa: PLR0915
         print("LiteLLM_VerificationTokenView Exists!")  # noqa
     except Exception:
         # If an error occurs, the view does not exist, so create it
-        await db.execute_raw(
-            """
+        await db.execute_raw("""
                 CREATE VIEW "LiteLLM_VerificationTokenView" AS
                 SELECT 
                 v.*, 
@@ -45,8 +44,7 @@ async def check_view_exists():  # noqa: PLR0915
                 t.rpm_limit AS team_rpm_limit
                 FROM "LiteLLM_VerificationToken" v
                 LEFT JOIN "LiteLLM_TeamTable" t ON v.team_id = t.team_id;
-            """
-        )
+            """)
 
         print("LiteLLM_VerificationTokenView Created!")  # noqa
 
@@ -168,11 +166,11 @@ async def check_view_exists():  # noqa: PLR0915
         print("MonthlyGlobalSpendPerUserPerKey Created!")  # noqa
 
     try:
-        await db.query_raw("""SELECT 1 FROM DailyTagSpend LIMIT 1""")
+        await db.query_raw("""SELECT 1 FROM "DailyTagSpend" LIMIT 1""")
         print("DailyTagSpend Exists!")  # noqa
     except Exception:
         sql_query = """
-        CREATE OR REPLACE VIEW DailyTagSpend AS
+        CREATE OR REPLACE VIEW "DailyTagSpend" AS
         SELECT
             jsonb_array_elements_text(request_tags) AS individual_request_tag,
             DATE(s."startTime") AS spend_date,

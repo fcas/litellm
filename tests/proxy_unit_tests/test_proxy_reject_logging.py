@@ -34,7 +34,7 @@ from litellm import Router, mock_completion
 from litellm.caching.caching import DualCache
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.proxy._types import UserAPIKeyAuth
-from litellm.proxy.enterprise.enterprise_hooks.secret_detection import (
+from litellm_enterprise.enterprise_callbacks.secret_detection import (
     _ENTERPRISE_SecretDetection,
 )
 from litellm.proxy.proxy_server import (
@@ -95,6 +95,21 @@ router = Router(
 )
 
 
+def _register_proxy_test_logger(callback_logger: testLogger) -> None:
+    """
+    Register the test logger on global callback lists.
+
+    ``function_setup`` dedupes by object identity; each parametrized case
+    constructs a new ``testLogger`` and must replace the global lists, not
+    only ``litellm.callbacks``.
+    """
+    litellm.callbacks = [callback_logger]
+    litellm.success_callback = [callback_logger]
+    litellm.failure_callback = [callback_logger]
+    litellm._async_success_callback = [callback_logger]
+    litellm._async_failure_callback = [callback_logger]
+
+
 @pytest.mark.parametrize(
     "route, body",
     [
@@ -115,7 +130,7 @@ router = Router(
             "/v1/embeddings",
             {
                 "input": "The food was delicious and the waiter...",
-                "model": "text-embedding-ada-002",
+                "model": "fake-model",
                 "encoding_format": "float",
             },
         ),
@@ -133,7 +148,7 @@ async def test_chat_completion_request_with_redaction(route, body):
 
     setattr(proxy_server, "llm_router", router)
     _test_logger = testLogger()
-    litellm.callbacks = [_test_logger]
+    _register_proxy_test_logger(_test_logger)
     litellm.set_verbose = True
 
     # Prepare the query string
@@ -163,7 +178,10 @@ async def test_chat_completion_request_with_redaction(route, body):
             response = await chat_completion(
                 request=request,
                 user_api_key_dict=UserAPIKeyAuth(
-                    api_key="sk-12345", token="hashed_sk-12345", rpm_limit=0
+                    api_key="sk-12345",
+                    token="hashed_sk-12345",
+                    rpm_limit=0,
+                    request_route=route,
                 ),
                 fastapi_response=Response(),
             )
@@ -171,7 +189,10 @@ async def test_chat_completion_request_with_redaction(route, body):
             response = await completion(
                 request=request,
                 user_api_key_dict=UserAPIKeyAuth(
-                    api_key="sk-12345", token="hashed_sk-12345", rpm_limit=0
+                    api_key="sk-12345",
+                    token="hashed_sk-12345",
+                    rpm_limit=0,
+                    request_route=route,
                 ),
                 fastapi_response=Response(),
             )
@@ -179,7 +200,10 @@ async def test_chat_completion_request_with_redaction(route, body):
             response = await embeddings(
                 request=request,
                 user_api_key_dict=UserAPIKeyAuth(
-                    api_key="sk-12345", token="hashed_sk-12345", rpm_limit=0
+                    api_key="sk-12345",
+                    token="hashed_sk-12345",
+                    rpm_limit=0,
+                    request_route=route,
                 ),
                 fastapi_response=Response(),
             )

@@ -1,34 +1,63 @@
 model_list:
-  - model_name: openai/*
+  - model_name: gpt-4o
     litellm_params:
-      model: openai/*
+      model: openai/gpt-4o
       api_key: os.environ/OPENAI_API_KEY
-  - model_name: anthropic/*
-    litellm_params:
-      model: anthropic/*
-      api_key: os.environ/ANTHROPIC_API_KEY
-  - model_name: bedrock/*
-    litellm_params:
-      model: bedrock/*
 
-guardrails:
-  - guardrail_name: "bedrock-pre-guard"
+  - model_name: text-embedding-3-small
     litellm_params:
-      guardrail: bedrock  # supported values: "aporia", "bedrock", "lakera"
-      mode: "during_call"
-      guardrailIdentifier: ff6ujrregl1q # your guardrail ID on bedrock
-      guardrailVersion: "DRAFT"         # your guardrail version on bedrock
-      mode: "post_call"
-      guardrailIdentifier: ff6ujrregl1q
-      guardrailVersion: "DRAFT"
-    guardrail_info:
-      params:
-        - name: "toxicity_score"
-          type: "float"
-          description: "Score between 0-1 indicating content toxicity level"
-        - name: "pii_detection"
-          type: "boolean"
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: bedrock-claude-sonnet-3.5
+    litellm_params:
+      model: "bedrock/us.anthropic.claude-3-5-sonnet-20240620-v1:0"
+      aws_region_name: "us-east-1"
+
+  - model_name: bedrock-claude-sonnet-4
+    litellm_params:
+      model: "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0"
+      aws_region_name: "us-east-1"
+
+  - model_name: bedrock-claude-sonnet-4.5
+    litellm_params:
+      model: "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+      aws_region_name: "us-east-1"
+
+  - model_name: bedrock-claude-opus-4.5
+    litellm_params:
+      model: "bedrock/converse/us.anthropic.claude-opus-4-5-20251101-v1:0"
+      aws_region_name: "us-east-1"
+
+  - model_name: bedrock-nova-premier
+    litellm_params:
+      model: "bedrock/us.amazon.nova-premier-v1:0"
+      aws_region_name: "us-east-1"
+
+# MCP Server Configuration
+mcp_servers:
+  # Wikipedia MCP - reliable and works without external deps
+  wikipedia:
+    transport: "stdio"
+    command: "uvx"
+    args: ["mcp-server-fetch"]
+    description: "Fetch web pages and Wikipedia content"
+  deepwiki:
+    transport: "http"
+    url: "https://mcp.deepwiki.com/mcp"
 
 
+# General Settings
+general_settings:
+  master_key: sk-1234
+  store_model_in_db: false
+
+# LiteLLM Settings
 litellm_settings:
-  callbacks: ["datadog"]
+  # Enable MCP Semantic Tool Filter
+  mcp_semantic_tool_filter:
+    enabled: true
+    embedding_model: "text-embedding-3-small"
+    top_k: 5
+    similarity_threshold: 0.3
+  

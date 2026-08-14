@@ -29,12 +29,14 @@ from litellm import Router, mock_completion
 from litellm.caching.caching import DualCache
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.proxy._types import UserAPIKeyAuth
-from litellm.proxy.enterprise.enterprise_hooks.secret_detection import (
+from litellm_enterprise.enterprise_callbacks.secret_detection import (
     _ENTERPRISE_SecretDetection,
 )
 from litellm.proxy.proxy_server import chat_completion
 from litellm.proxy.utils import ProxyLogging, hash_token
 from litellm.router import Router
+
+from tests.fake_openai_endpoint import FAKE_OPENAI_API_BASE
 
 ### UNIT TESTS FOR OpenAI Moderation ###
 
@@ -246,7 +248,7 @@ router = Router(
             "model_name": "fake-model",
             "litellm_params": {
                 "model": "openai/fake",
-                "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                "api_base": FAKE_OPENAI_API_BASE,
                 "api_key": "sk-12345",
             },
         }
@@ -267,7 +269,7 @@ async def test_chat_completion_request_with_redaction():
     setattr(proxy_server, "llm_router", router)
     _test_logger = testLogger()
     litellm.callbacks = [_ENTERPRISE_SecretDetection(), _test_logger]
-    litellm.set_verbose = True
+    litellm._turn_on_debug()
 
     # Prepare the query string
     query_params = "param1=value1&param2=value2"

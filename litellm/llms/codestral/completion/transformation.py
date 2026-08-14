@@ -1,34 +1,35 @@
 import json
-from typing import Optional
+from typing import Final
 
 import litellm
 from litellm.llms.openai.completion.transformation import OpenAITextCompletionConfig
 from litellm.types.llms.databricks import GenericStreamingChunk
+
 
 class CodestralTextCompletionConfig(OpenAITextCompletionConfig):
     """
     Reference: https://docs.mistral.ai/api/#operation/createFIMCompletion
     """
 
-    suffix: Optional[str] = None
-    temperature: Optional[int] = None
-    max_tokens: Optional[int] = None
-    min_tokens: Optional[int] = None
-    stream: Optional[bool] = None
-    random_seed: Optional[int] = None
+    suffix: str | None = None
+    temperature: int | None = None
+    max_tokens: int | None = None
+    min_tokens: int | None = None
+    stream: bool | None = None
+    random_seed: int | None = None
 
     def __init__(
         self,
-        suffix: Optional[str] = None,
-        temperature: Optional[int] = None,
-        top_p: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-        min_tokens: Optional[int] = None,
-        stream: Optional[bool] = None,
-        random_seed: Optional[int] = None,
-        stop: Optional[str] = None,
+        suffix: str | None = None,
+        temperature: int | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
+        min_tokens: int | None = None,
+        stream: bool | None = None,
+        random_seed: int | None = None,
+        stop: str | None = None,
     ) -> None:
-        locals_ = locals().copy()
+        locals_: Final = locals().copy()
         for key, value in locals_.items():
             if key != "self" and value is not None:
                 setattr(self.__class__, key, value)
@@ -82,7 +83,7 @@ class CodestralTextCompletionConfig(OpenAITextCompletionConfig):
         finish_reason = None
         logprobs = None
 
-        chunk_data = chunk_data.replace("data:", "")
+        chunk_data = litellm.CustomStreamWrapper._strip_sse_data_from_chunk(chunk_data) or ""
         chunk_data = chunk_data.strip()
         if len(chunk_data) == 0 or chunk_data == "[DONE]":
             return {
@@ -90,10 +91,24 @@ class CodestralTextCompletionConfig(OpenAITextCompletionConfig):
                 "is_finished": is_finished,
                 "finish_reason": finish_reason,
             }
-        chunk_data_dict = json.loads(chunk_data)
-        original_chunk = litellm.ModelResponse(**chunk_data_dict, stream=True)
-        _choices = chunk_data_dict.get("choices", []) or []
-        _choice = _choices[0]
+        try:
+            chunk_data_dict: Final = json.loads(chunk_data)
+        except json.JSONDecodeError:
+            return {
+                "text": "",
+                "is_finished": is_finished,
+                "finish_reason": finish_reason,
+            }
+
+        original_chunk: Final = litellm.ModelResponseStream(**chunk_data_dict)
+        _choices: Final = chunk_data_dict.get("choices", []) or []
+        if len(_choices) == 0:
+            return {
+                "text": "",
+                "is_finished": is_finished,
+                "finish_reason": finish_reason,
+            }
+        _choice: Final = _choices[0]
         text = _choice.get("delta", {}).get("content", "")
 
         if _choice.get("finish_reason") is not None:

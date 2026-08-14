@@ -1,6 +1,7 @@
 import json
 import time
-from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator, List, Optional, Union
+from collections.abc import AsyncIterator, Iterator
+from typing import TYPE_CHECKING, Any, Final
 
 import httpx
 
@@ -26,7 +27,7 @@ class CohereError(BaseLLMException):
         self,
         status_code: int,
         message: str,
-        headers: Optional[httpx.Headers] = None,
+        headers: httpx.Headers | None = None,
     ):
         self.status_code = status_code
         self.message = message
@@ -54,7 +55,8 @@ class CohereChatConfig(BaseConfig):
         search_queries_only (bool, optional): When true, the response will only contain a list of generated search queries.
         documents (List[Dict[str, str]], optional): A list of relevant documents that the model can cite.
         temperature (float, optional): A non-negative float that tunes the degree of randomness in generation.
-        max_tokens (int, optional): The maximum number of tokens the model will generate as part of the response.
+        max_tokens [DEPRECATED - use max_completion_tokens] (int, optional): The maximum number of tokens the model will generate as part of the response.
+        max_completion_tokens (int, optional): The maximum number of tokens the model will generate as part of the response.
         k (int, optional): Ensures only the top k most likely tokens are considered for generation at each step.
         p (float, optional): Ensures that only the most likely tokens, with total probability mass of p, are considered for generation.
         frequency_penalty (float, optional): Used to reduce repetitiveness of generated tokens.
@@ -64,47 +66,49 @@ class CohereChatConfig(BaseConfig):
         seed (int, optional): A seed to assist reproducibility of the model's response.
     """
 
-    preamble: Optional[str] = None
-    chat_history: Optional[list] = None
-    generation_id: Optional[str] = None
-    response_id: Optional[str] = None
-    conversation_id: Optional[str] = None
-    prompt_truncation: Optional[str] = None
-    connectors: Optional[list] = None
-    search_queries_only: Optional[bool] = None
-    documents: Optional[list] = None
-    temperature: Optional[int] = None
-    max_tokens: Optional[int] = None
-    k: Optional[int] = None
-    p: Optional[int] = None
-    frequency_penalty: Optional[int] = None
-    presence_penalty: Optional[int] = None
-    tools: Optional[list] = None
-    tool_results: Optional[list] = None
-    seed: Optional[int] = None
+    preamble: str | None = None
+    chat_history: list | None = None
+    generation_id: str | None = None
+    response_id: str | None = None
+    conversation_id: str | None = None
+    prompt_truncation: str | None = None
+    connectors: list | None = None
+    search_queries_only: bool | None = None
+    documents: list | None = None
+    temperature: int | None = None
+    max_tokens: int | None = None
+    max_completion_tokens: int | None = None
+    k: int | None = None
+    p: int | None = None
+    frequency_penalty: int | None = None
+    presence_penalty: int | None = None
+    tools: list | None = None
+    tool_results: list | None = None
+    seed: int | None = None
 
     def __init__(
         self,
-        preamble: Optional[str] = None,
-        chat_history: Optional[list] = None,
-        generation_id: Optional[str] = None,
-        response_id: Optional[str] = None,
-        conversation_id: Optional[str] = None,
-        prompt_truncation: Optional[str] = None,
-        connectors: Optional[list] = None,
-        search_queries_only: Optional[bool] = None,
-        documents: Optional[list] = None,
-        temperature: Optional[int] = None,
-        max_tokens: Optional[int] = None,
-        k: Optional[int] = None,
-        p: Optional[int] = None,
-        frequency_penalty: Optional[int] = None,
-        presence_penalty: Optional[int] = None,
-        tools: Optional[list] = None,
-        tool_results: Optional[list] = None,
-        seed: Optional[int] = None,
+        preamble: str | None = None,
+        chat_history: list | None = None,
+        generation_id: str | None = None,
+        response_id: str | None = None,
+        conversation_id: str | None = None,
+        prompt_truncation: str | None = None,
+        connectors: list | None = None,
+        search_queries_only: bool | None = None,
+        documents: list | None = None,
+        temperature: int | None = None,
+        max_tokens: int | None = None,
+        max_completion_tokens: int | None = None,
+        k: int | None = None,
+        p: int | None = None,
+        frequency_penalty: int | None = None,
+        presence_penalty: int | None = None,
+        tools: list | None = None,
+        tool_results: list | None = None,
+        seed: int | None = None,
     ) -> None:
-        locals_ = locals()
+        locals_: Final = locals().copy()
         for key, value in locals_.items():
             if key != "self" and value is not None:
                 setattr(self.__class__, key, value)
@@ -113,9 +117,11 @@ class CohereChatConfig(BaseConfig):
         self,
         headers: dict,
         model: str,
-        messages: List[AllMessageValues],
+        messages: list[AllMessageValues],
         optional_params: dict,
-        api_key: Optional[str] = None,
+        litellm_params: dict,
+        api_key: str | None = None,
+        api_base: str | None = None,
     ) -> dict:
         return cohere_validate_environment(
             headers=headers,
@@ -125,11 +131,12 @@ class CohereChatConfig(BaseConfig):
             api_key=api_key,
         )
 
-    def get_supported_openai_params(self, model: str) -> List[str]:
+    def get_supported_openai_params(self, model: str) -> list[str]:
         return [
             "stream",
             "temperature",
             "max_tokens",
+            "max_completion_tokens",
             "top_p",
             "frequency_penalty",
             "presence_penalty",
@@ -155,6 +162,8 @@ class CohereChatConfig(BaseConfig):
                 optional_params["temperature"] = value
             if param == "max_tokens":
                 optional_params["max_tokens"] = value
+            if param == "max_completion_tokens":
+                optional_params["max_tokens"] = value
             if param == "n":
                 optional_params["num_generations"] = value
             if param == "top_p":
@@ -174,12 +183,11 @@ class CohereChatConfig(BaseConfig):
     def transform_request(
         self,
         model: str,
-        messages: List[AllMessageValues],
+        messages: list[AllMessageValues],
         optional_params: dict,
         litellm_params: dict,
         headers: dict,
     ) -> dict:
-
         ## Load Config
         for k, v in litellm.CohereChatConfig.get_config().items():
             if (
@@ -193,8 +201,8 @@ class CohereChatConfig(BaseConfig):
 
         ## Handle Tool Calling
         if "tools" in optional_params:
-            _is_function_call = True
-            cohere_tools = self._construct_cohere_tool(tools=optional_params["tools"])
+            _is_function_call: Final = True
+            cohere_tools: Final = self._construct_cohere_tool(tools=optional_params["tools"])
             optional_params["tools"] = cohere_tools
         if isinstance(most_recent_message, dict):
             optional_params["tool_results"] = [most_recent_message]
@@ -214,31 +222,28 @@ class CohereChatConfig(BaseConfig):
         model_response: ModelResponse,
         logging_obj: LiteLLMLoggingObj,
         request_data: dict,
-        messages: List[AllMessageValues],
+        messages: list[AllMessageValues],
         optional_params: dict,
         litellm_params: dict,
         encoding: Any,
-        api_key: Optional[str] = None,
-        json_mode: Optional[bool] = None,
+        api_key: str | None = None,
+        json_mode: bool | None = None,
     ) -> ModelResponse:
-
         try:
-            raw_response_json = raw_response.json()
-            model_response.choices[0].message.content = raw_response_json["text"]  # type: ignore
+            raw_response_json: Final = raw_response.json()
+            model_response.choices[0].message.content = raw_response_json["text"]
         except Exception:
-            raise CohereError(
-                message=raw_response.text, status_code=raw_response.status_code
-            )
+            raise CohereError(message=raw_response.text, status_code=raw_response.status_code)
 
         ## ADD CITATIONS
         if "citations" in raw_response_json:
             setattr(model_response, "citations", raw_response_json["citations"])
 
         ## Tool calling response
-        cohere_tools_response = raw_response_json.get("tool_calls", None)
+        cohere_tools_response: Final = raw_response_json.get("tool_calls", None)
         if cohere_tools_response is not None and cohere_tools_response != []:
             # convert cohere_tools_response to OpenAI response format
-            tool_calls = []
+            tool_calls: Final = []
             for tool in cohere_tools_response:
                 function_name = tool.get("name", "")
                 generation_id = tool.get("generation_id", "")
@@ -252,21 +257,21 @@ class CohereChatConfig(BaseConfig):
                     },
                 }
                 tool_calls.append(tool_call)
-            _message = litellm.Message(
+            _message: Final = litellm.Message(
                 tool_calls=tool_calls,
                 content=None,
             )
-            model_response.choices[0].message = _message  # type: ignore
+            model_response.choices[0].message = _message
 
         ## CALCULATING USAGE - use cohere `billed_units` for returning usage
-        billed_units = raw_response_json.get("meta", {}).get("billed_units", {})
+        billed_units: Final = raw_response_json.get("meta", {}).get("billed_units", {})
 
-        prompt_tokens = billed_units.get("input_tokens", 0)
-        completion_tokens = billed_units.get("output_tokens", 0)
+        prompt_tokens: Final = billed_units.get("input_tokens", 0)
+        completion_tokens: Final = billed_units.get("output_tokens", 0)
 
         model_response.created = int(time.time())
         model_response.model = model
-        usage = Usage(
+        usage: Final = Usage(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=prompt_tokens + completion_tokens,
@@ -276,11 +281,11 @@ class CohereChatConfig(BaseConfig):
 
     def _construct_cohere_tool(
         self,
-        tools: Optional[list] = None,
+        tools: list | None = None,
     ):
         if tools is None:
             tools = []
-        cohere_tools = []
+        cohere_tools: Final = []
         for tool in tools:
             cohere_tool = self._translate_openai_tool_to_cohere(tool)
             cohere_tools.append(cohere_tool)
@@ -326,20 +331,14 @@ class CohereChatConfig(BaseConfig):
             },
         }
         """
-        cohere_tool = {
+        cohere_tool: Final = {
             "name": openai_tool["function"]["name"],
             "description": openai_tool["function"]["description"],
             "parameter_definitions": {},
         }
 
-        for param_name, param_def in openai_tool["function"]["parameters"][
-            "properties"
-        ].items():
-            required_params = (
-                openai_tool.get("function", {})
-                .get("parameters", {})
-                .get("required", [])
-            )
+        for param_name, param_def in openai_tool["function"]["parameters"]["properties"].items():
+            required_params = openai_tool.get("function", {}).get("parameters", {}).get("required", [])
             cohere_param_def = {
                 "description": param_def.get("description", ""),
                 "type": param_def.get("type", ""),
@@ -351,9 +350,9 @@ class CohereChatConfig(BaseConfig):
 
     def get_model_response_iterator(
         self,
-        streaming_response: Union[Iterator[str], AsyncIterator[str], ModelResponse],
+        streaming_response: Iterator[str] | AsyncIterator[str] | ModelResponse,
         sync_stream: bool,
-        json_mode: Optional[bool] = False,
+        json_mode: bool | None = False,
     ):
         return CohereModelResponseIterator(
             streaming_response=streaming_response,
@@ -361,7 +360,5 @@ class CohereChatConfig(BaseConfig):
             json_mode=json_mode,
         )
 
-    def get_error_class(
-        self, error_message: str, status_code: int, headers: Union[dict, httpx.Headers]
-    ) -> BaseLLMException:
+    def get_error_class(self, error_message: str, status_code: int, headers: dict | httpx.Headers) -> BaseLLMException:
         return CohereError(status_code=status_code, message=error_message)

@@ -1,4 +1,4 @@
-import os
+from typing import Final
 
 
 def show_missing_vars_in_env():
@@ -8,15 +8,11 @@ def show_missing_vars_in_env():
 
     if prisma_client is None and master_key is None:
         return HTMLResponse(
-            content=missing_keys_form(
-                missing_key_names="DATABASE_URL, LITELLM_MASTER_KEY"
-            ),
+            content=missing_keys_form(missing_key_names="DATABASE_URL, LITELLM_MASTER_KEY"),
             status_code=200,
         )
     if prisma_client is None:
-        return HTMLResponse(
-            content=missing_keys_form(missing_key_names="DATABASE_URL"), status_code=200
-        )
+        return HTMLResponse(content=missing_keys_form(missing_key_names="DATABASE_URL"), status_code=200)
 
     if master_key is None:
         return HTMLResponse(
@@ -26,76 +22,8 @@ def show_missing_vars_in_env():
     return None
 
 
-# LiteLLM Admin UI - Non SSO Login
-url_to_redirect_to = os.getenv("PROXY_BASE_URL", "")
-url_to_redirect_to += "/login"
-html_form = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <title>LiteLLM Login</title>
-    <style>
-        body {{
-            font-family: Arial, sans-serif;
-            background-color: #f4f4f4;
-            margin: 0;
-            padding: 0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-        }}
-
-        form {{
-            background-color: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-        }}
-
-        label {{
-            display: block;
-            margin-bottom: 8px;
-        }}
-
-        input {{
-            width: 100%;
-            padding: 8px;
-            margin-bottom: 16px;
-            box-sizing: border-box;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-        }}
-
-        input[type="submit"] {{
-            background-color: #4caf50;
-            color: #fff;
-            cursor: pointer;
-        }}
-
-        input[type="submit"]:hover {{
-            background-color: #45a049;
-        }}
-    </style>
-</head>
-<body>
-    <form action="{url_to_redirect_to}" method="post">
-        <h2>LiteLLM Login</h2>
-
-        <p>By default Username is "admin" and Password is your set LiteLLM Proxy `MASTER_KEY`</p>
-        <p>If you need to set UI credentials / SSO docs here: <a href="https://docs.litellm.ai/docs/proxy/ui" target="_blank">https://docs.litellm.ai/docs/proxy/ui</a></p>
-        <br>
-        <label for="username">Username:</label>
-        <input type="text" id="username" name="username" required>
-        <label for="password">Password:</label>
-        <input type="password" id="password" name="password" required>
-        <input type="submit" value="Submit">
-    </form>
-"""
-
-
 def missing_keys_form(missing_key_names: str):
-    missing_keys_html_form = """
+    missing_keys_html_form: Final = """
         <!DOCTYPE html>
         <html lang="en">
         <head>
@@ -170,7 +98,7 @@ def missing_keys_form(missing_key_names: str):
 def admin_ui_disabled():
     from fastapi.responses import HTMLResponse
 
-    ui_disabled_html = """
+    ui_disabled_html: Final = """
         <!DOCTYPE html>
         <html lang="en">
         <head>

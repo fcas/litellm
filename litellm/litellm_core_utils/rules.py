@@ -1,5 +1,3 @@
-from typing import Optional
-
 import litellm
 
 
@@ -23,15 +21,24 @@ class Rules:
     def __init__(self) -> None:
         pass
 
+    @staticmethod
+    def has_pre_call_rules() -> bool:
+        """Check if any pre-call rules are configured"""
+        return len(litellm.pre_call_rules) > 0
+
     def pre_call_rules(self, input: str, model: str):
         for rule in litellm.pre_call_rules:
             if callable(rule):
                 decision = rule(input)
                 if decision is False:
-                    raise litellm.APIResponseValidationError(message="LLM Response failed post-call-rule check", llm_provider="", model=model)  # type: ignore
+                    raise litellm.APIResponseValidationError(
+                        message="LLM Response failed post-call-rule check",
+                        llm_provider="",
+                        model=model,
+                    )
         return True
 
-    def post_call_rules(self, input: Optional[str], model: str) -> bool:
+    def post_call_rules(self, input: str | None, model: str) -> bool:
         if input is None:
             return True
         for rule in litellm.post_call_rules:
@@ -39,12 +46,14 @@ class Rules:
                 decision = rule(input)
                 if isinstance(decision, bool):
                     if decision is False:
-                        raise litellm.APIResponseValidationError(message="LLM Response failed post-call-rule check", llm_provider="", model=model)  # type: ignore
+                        raise litellm.APIResponseValidationError(
+                            message="LLM Response failed post-call-rule check",
+                            llm_provider="",
+                            model=model,
+                        )
                 elif isinstance(decision, dict):
                     decision_val = decision.get("decision", True)
-                    decision_message = decision.get(
-                        "message", "LLM Response failed post-call-rule check"
-                    )
+                    decision_message = decision.get("message", "LLM Response failed post-call-rule check")
                     if decision_val is False:
-                        raise litellm.APIResponseValidationError(message=decision_message, llm_provider="", model=model)  # type: ignore
+                        raise litellm.APIResponseValidationError(message=decision_message, llm_provider="", model=model)
         return True

@@ -46,9 +46,9 @@ async def test_delete_deployment():
     import base64
 
     litellm_params = LiteLLM_Params(
-        model="azure/chatgpt-v-2",
-        api_key=os.getenv("AZURE_API_KEY"),
-        api_base=os.getenv("AZURE_API_BASE"),
+        model="azure/gpt-4.1-mini",
+        api_key=os.getenv("AZURE_AI_API_KEY"),
+        api_base=os.getenv("AZURE_AI_API_BASE"),
         api_version=os.getenv("AZURE_API_VERSION"),
     )
     encrypted_litellm_params = litellm_params.dict(exclude_none=True)
@@ -88,10 +88,11 @@ async def test_delete_deployment():
     )
 
     db_models = [db_model]
-    deleted_deployments = await pc._delete_deployment(db_models=db_models)
+    still_desired = await pc._delete_deployment(db_models=db_models)
 
-    assert deleted_deployments == 1
+    assert still_desired == frozenset({deployment.model_info.id})
     assert len(llm_router.model_list) == 1
+    assert llm_router.get_model_ids() == [deployment.model_info.id]
 
     """
     Scenario 2 - if model id != model_info["id"]
@@ -115,10 +116,11 @@ async def test_delete_deployment():
     )
 
     db_models = [db_model]
-    deleted_deployments = await pc._delete_deployment(db_models=db_models)
+    still_desired = await pc._delete_deployment(db_models=db_models)
 
-    assert deleted_deployments == 1
+    assert still_desired == frozenset({deployment.model_info.id})
     assert len(llm_router.model_list) == 1
+    assert llm_router.get_model_ids() == [deployment.model_info.id]
 
 
 @pytest.mark.asyncio
@@ -131,8 +133,8 @@ async def test_add_existing_deployment():
 
     litellm_params = LiteLLM_Params(
         model="gpt-3.5-turbo",
-        api_key=os.getenv("AZURE_API_KEY"),
-        api_base=os.getenv("AZURE_API_BASE"),
+        api_key=os.getenv("AZURE_AI_API_KEY"),
+        api_base=os.getenv("AZURE_AI_API_BASE"),
         api_version=os.getenv("AZURE_API_VERSION"),
     )
     deployment = Deployment(model_name="gpt-3.5-turbo", litellm_params=litellm_params)
@@ -186,8 +188,8 @@ async def test_db_error_new_model_check():
 
     litellm_params = LiteLLM_Params(
         model="gpt-3.5-turbo",
-        api_key=os.getenv("AZURE_API_KEY"),
-        api_base=os.getenv("AZURE_API_BASE"),
+        api_key=os.getenv("AZURE_AI_API_KEY"),
+        api_base=os.getenv("AZURE_AI_API_BASE"),
         api_version=os.getenv("AZURE_API_VERSION"),
     )
     deployment = Deployment(model_name="gpt-3.5-turbo", litellm_params=litellm_params)
@@ -224,17 +226,37 @@ async def test_db_error_new_model_check():
         model_info={"id": deployment.model_info.id},
     )
 
-    db_models = []
-    deleted_deployments = await pc._delete_deployment(db_models=db_models)
-    assert deleted_deployments == 0
+    # Mock get_config to return the two deployments as config-backed models so
+    # they appear in combined_id_list and are not evicted when db_models is empty
+    # (simulates the real-world case: DB error returns [], but models live in config).
+    config_model_list = [
+        deployment.to_json(exclude_none=True),
+        deployment_2.to_json(exclude_none=True),
+    ]
+    from unittest.mock import AsyncMock, patch
+
+    with patch.object(
+        pc,
+        "get_config",
+        new=AsyncMock(return_value={"model_list": config_model_list}),
+    ):
+        db_models = []
+        still_desired = await pc._delete_deployment(db_models=db_models)
+    assert still_desired == frozenset(
+        {deployment.model_info.id, deployment_2.model_info.id}
+    )
 
     assert init_len_list == len(llm_router.model_list)
+    assert set(llm_router.get_model_ids()) == {
+        deployment.model_info.id,
+        deployment_2.model_info.id,
+    }
 
 
 litellm_params = LiteLLM_Params(
-    model="azure/chatgpt-v-2",
-    api_key=os.getenv("AZURE_API_KEY"),
-    api_base=os.getenv("AZURE_API_BASE"),
+    model="azure/gpt-4.1-mini",
+    api_key=os.getenv("AZURE_AI_API_KEY"),
+    api_base=os.getenv("AZURE_AI_API_BASE"),
     api_version=os.getenv("AZURE_API_VERSION"),
 )
 
@@ -250,9 +272,9 @@ def _create_model_list(flag_value: Literal[0, 1], master_key: str):
     import base64
 
     new_litellm_params = LiteLLM_Params(
-        model="azure/chatgpt-v-2-3",
-        api_key=os.getenv("AZURE_API_KEY"),
-        api_base=os.getenv("AZURE_API_BASE"),
+        model="azure/gpt-4.1-mini-3",
+        api_key=os.getenv("AZURE_AI_API_KEY"),
+        api_base=os.getenv("AZURE_AI_API_BASE"),
         api_version=os.getenv("AZURE_API_VERSION"),
     )
 
@@ -369,6 +391,17 @@ def _check_provider_config(config: BaseConfig, provider: LlmProviders):
     assert "_abc_impl" not in config.get_config(), f"Provider {provider} has _abc_impl"
 
 
+def test_provider_config_manager_bedrock_converse_like():
+    from litellm.llms.bedrock.chat.converse_transformation import AmazonConverseConfig
+
+    config = ProviderConfigManager.get_provider_chat_config(
+        model="bedrock/converse_like/us.amazon.nova-pro-v1:0",
+        provider=LlmProviders.BEDROCK,
+    )
+    print(f"config: {config}")
+    assert isinstance(config, AmazonConverseConfig)
+
+
 # def test_provider_config_manager():
 #     from litellm.llms.openai.chat.gpt_transformation import OpenAIGPTConfig
 
@@ -390,3 +423,23 @@ def _check_provider_config(config: BaseConfig, provider: LlmProviders):
 #             model="gpt-3.5-turbo", provider=LlmProviders(provider)
 #         )
 #         _check_provider_config(config, provider)
+
+
+def test_litellm_proxy_responses_api_config():
+    """Test that litellm_proxy provider returns correct Responses API config"""
+    from litellm.llms.litellm_proxy.responses.transformation import (
+        LiteLLMProxyResponsesAPIConfig,
+    )
+
+    config = ProviderConfigManager.get_provider_responses_api_config(
+        model="litellm_proxy/gpt-4",
+        provider=LlmProviders.LITELLM_PROXY,
+    )
+    print(f"config: {config}")
+    assert config is not None, "Config should not be None for litellm_proxy provider"
+    assert isinstance(
+        config, LiteLLMProxyResponsesAPIConfig
+    ), f"Expected LiteLLMProxyResponsesAPIConfig, got {type(config)}"
+    assert (
+        config.custom_llm_provider == LlmProviders.LITELLM_PROXY
+    ), "custom_llm_provider should be LITELLM_PROXY"

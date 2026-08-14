@@ -1,10 +1,11 @@
 import types
-from typing import Optional
+from typing import Final
 
 import litellm
+from litellm.llms.openai.chat.gpt_transformation import OpenAIGPTConfig
 
 
-class VertexAIAi21Config:
+class VertexAIAi21Config(OpenAIGPTConfig):
     """
     Reference: https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/ai21
 
@@ -15,9 +16,9 @@ class VertexAIAi21Config:
 
     def __init__(
         self,
-        max_tokens: Optional[int] = None,
+        max_tokens: int | None = None,
     ) -> None:
-        locals_ = locals()
+        locals_: Final = locals().copy()
         for key, value in locals_.items():
             if key != "self" and value is not None:
                 setattr(self.__class__, key, value)
@@ -40,9 +41,6 @@ class VertexAIAi21Config:
             and v is not None
         }
 
-    def get_supported_openai_params(self):
-        return litellm.OpenAIConfig().get_supported_openai_params(model="gpt-3.5-turbo")
-
     def map_openai_params(
         self,
         non_default_params: dict,
@@ -51,9 +49,7 @@ class VertexAIAi21Config:
         drop_params: bool,
     ):
         if "max_completion_tokens" in non_default_params:
-            non_default_params["max_tokens"] = non_default_params.pop(
-                "max_completion_tokens"
-            )
+            non_default_params["max_tokens"] = non_default_params.pop("max_completion_tokens")
         return litellm.OpenAIConfig().map_openai_params(
             non_default_params=non_default_params,
             optional_params=optional_params,

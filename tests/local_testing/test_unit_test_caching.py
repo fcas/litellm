@@ -2,7 +2,7 @@ import os
 import sys
 import time
 import traceback
-import uuid
+from litellm._uuid import uuid
 
 from dotenv import load_dotenv
 
@@ -34,13 +34,14 @@ from litellm.types.utils import (
 )
 from datetime import timedelta, datetime
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLogging
+from litellm.litellm_core_utils.model_param_helper import ModelParamHelper
 from litellm._logging import verbose_logger
 import logging
 
 
 def test_get_kwargs_for_cache_key():
     _cache = litellm.Cache()
-    relevant_kwargs = _cache._get_relevant_args_to_use_for_cache_key()
+    relevant_kwargs = ModelParamHelper._get_all_llm_api_params()
     print(relevant_kwargs)
 
 
@@ -130,6 +131,55 @@ def test_get_cache_key_text_completion():
     assert cache_key_2 == cache_key_3
 
 
+def test_get_cache_key_responses_api():
+    """
+    Regression test: two /v1/responses calls that differ only in
+    `instructions` (or any Responses-API-only param) must produce
+    different cache keys. Mirrors the chat / embedding / text-completion
+    cache-key tests above.
+    """
+    cache = Cache()
+
+    base_kwargs = {
+        "model": "openai/gpt-4.1",
+        "input": [{"role": "user", "content": "what is the weather"}],
+        "temperature": 0.3,
+    }
+
+    kwargs_a = {
+        **base_kwargs,
+        "instructions": "summarize the weather on 10th May",
+    }
+    kwargs_b = {
+        **base_kwargs,
+        "instructions": "summarize the weather on 7th May",
+    }
+
+    key_a = cache.get_cache_key(**kwargs_a)
+    key_b = cache.get_cache_key(**kwargs_b)
+
+    assert isinstance(key_a, str) and len(key_a) > 0
+    assert key_a != key_b, "instructions must be part of the Responses API cache key"
+
+    # Sanity: identical payloads must still collide (cache hits still work)
+    key_a_again = cache.get_cache_key(**kwargs_a)
+    assert key_a == key_a_again
+
+    # Spot-check a handful of other Responses-only params individually.
+    for param, value_x, value_y in [
+        ("previous_response_id", "resp_aaa", "resp_bbb"),
+        ("reasoning", {"effort": "low"}, {"effort": "high"}),
+        ("include", ["reasoning.encrypted_content"], []),
+        ("max_output_tokens", 100, 500),
+        ("background", True, False),
+    ]:
+        kx = {**base_kwargs, param: value_x}
+        ky = {**base_kwargs, param: value_y}
+        assert cache.get_cache_key(**kx) != cache.get_cache_key(
+            **ky
+        ), f"Responses-API param `{param}` is not part of the cache key"
+
+
 def test_get_hashed_cache_key():
     cache = Cache()
     cache_key = "model:gpt-3.5-turbo,messages:Hello world"
@@ -137,18 +187,27 @@ def test_get_hashed_cache_key():
     assert len(hashed_key) == 64  # SHA-256 produces a 64-character hex string
 
 
-def test_add_redis_namespace_to_cache_key():
+def test_add_namespace_to_cache_key():
     cache = Cache(namespace="test_namespace")
     hashed_key = "abcdef1234567890"
 
     # Test with class-level namespace
-    result = cache._add_redis_namespace_to_cache_key(hashed_key)
+    result = cache._add_namespace_to_cache_key(hashed_key)
     assert result == "test_namespace:abcdef1234567890"
 
     # Test with metadata namespace
     kwargs = {"metadata": {"redis_namespace": "custom_namespace"}}
-    result = cache._add_redis_namespace_to_cache_key(hashed_key, **kwargs)
+    result = cache._add_namespace_to_cache_key(hashed_key, **kwargs)
     assert result == "custom_namespace:abcdef1234567890"
+
+    # Test with cache control namespace
+    kwargs = {"cache": {"namespace": "cache_control_namespace"}}
+    result = cache._add_namespace_to_cache_key(hashed_key, **kwargs)
+    assert result == "cache_control_namespace:abcdef1234567890"
+
+    kwargs = {"cache": {"namespace": "cache_control_namespace-2"}}
+    result = cache._add_namespace_to_cache_key(hashed_key, **kwargs)
+    assert result == "cache_control_namespace-2:abcdef1234567890"
 
 
 def test_get_model_param_value():

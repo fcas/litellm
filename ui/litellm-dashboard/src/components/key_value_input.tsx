@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
-import { Form, Input, Button, Space } from 'antd';
-import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
-import { TextInput, Grid, Col } from "@tremor/react";
-import { TrashIcon } from "@heroicons/react/outline";
+import React, { useState } from "react";
+import { Minus, Plus } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 interface KeyValueInputProps {
   value?: Record<string, string>;
@@ -13,7 +13,7 @@ const KeyValueInput: React.FC<KeyValueInputProps> = ({ value = {}, onChange }) =
   const [pairs, setPairs] = useState<[string, string][]>(Object.entries(value));
 
   const handleAdd = () => {
-    setPairs([...pairs, ['', '']]);
+    setPairs([...pairs, ["", ""]]);
   };
 
   const handleRemove = (index: number) => {
@@ -30,23 +30,24 @@ const KeyValueInput: React.FC<KeyValueInputProps> = ({ value = {}, onChange }) =
   };
 
   return (
-    <div>
+    <div className="space-y-2">
       {pairs.map(([key, val], index) => (
-        <Space key={index} style={{ display: 'flex', marginBottom: 8 }} align="start">
-          <TextInput
-            placeholder="Header Name"
-            value={key}
-            onChange={(e) => handleChange(index, e.target.value, val)}
-          />
-          <TextInput
-            placeholder="Header Value"
-            value={val}
-            onChange={(e) => handleChange(index, key, e.target.value)}
-          />
-          <MinusCircleOutlined onClick={() => handleRemove(index)} />
-        </Space>
+        <div key={index} className="flex items-center gap-2">
+          <Input placeholder="Header Name" value={key} onChange={(e) => handleChange(index, e.target.value, val)} />
+          <Input placeholder="Header Value" value={val} onChange={(e) => handleChange(index, key, e.target.value)} />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => handleRemove(index)}
+            aria-label={`Remove header ${index + 1}`}
+          >
+            <Minus />
+          </Button>
+        </div>
       ))}
-      <Button type="dashed" onClick={handleAdd} icon={<PlusOutlined />}>
+      <Button type="button" variant="outline" onClick={handleAdd}>
+        <Plus />
         Add Header
       </Button>
     </div>
