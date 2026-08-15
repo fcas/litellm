@@ -64,6 +64,12 @@ jobs:
           build-mode: ${{ matrix.build-mode }}
           config: |
             threat-models: [remote, local]
+            query-filters:
+              # py/polynomial-redos produces a result set over the 2GiB SARIF
+              # upload limit on this repo's codebase size, failing the whole
+              # analysis job; every other query still runs normally.
+              - exclude:
+                  id: py/polynomial-redos
           # If you wish to specify custom queries, you can do so here or in a config file.
           # By default, queries listed here will override any specified in a config file.
           # Prefix the list here with "+" to use these queries and those in the config file.
